@@ -1,0 +1,331 @@
+#include <iostream>
+#include <vector>
+#include <random>
+#include <cmath>
+#include <iomanip>
+#include <algorithm>
+#include <fstream>
+
+/**
+ * Monte Carlo Simulation for Asset Price Modeling
+ * Using Geometric Brownian Motion (GBM)
+ * 
+ * Mathematical Foundation:
+ * dS = μS dt + σS dW
+ * Where:
+ * - S = asset price
+ * - μ = drift (expected return)
+ * - σ = volatility
+ * - dW = Wiener process (random walk)
+ * 
+ * Discrete form:
+ * S(t+1) = S(t) * exp((μ - σ²/2) * dt + σ * sqrt(dt) * Z)
+ * Where Z ~ N(0,1) (standard normal distribution)
+ */
+
+class GeometricBrownianMotion {
+private:
+    double initial_price;    // S₀ - starting asset price
+    double drift;           // μ - expected return (annual)
+    double volatility;      // σ - volatility (annual)
+    double time_horizon;    // T - total time period
+    int num_steps;          // N - number of time steps
+    int num_simulations;    // M - number of Monte Carlo paths
+    
+    // Random number generation components
+    std::random_device rd;                    // Hardware random seed
+    std::mt19937 generator;                   // Mersenne Twister generator
+    std::normal_distribution<double> norm_dist; // Standard normal distribution
+    
+    // Data structure to store simulation results
+    std::vector<std::vector<double>> price_paths; // 2D vector: [simulation][time_step]
+    
+    double dt; // Time step size = T/N
+
+public:
+    /**
+     * Constructor - Initialize simulation parameters
+     */
+    GeometricBrownianMotion(double S0, double mu, double sigma, double T, 
+                           int steps, int simulations)
+        : initial_price(S0), drift(mu), volatility(sigma), 
+          time_horizon(T), num_steps(steps), num_simulations(simulations),
+          generator(rd()), norm_dist(0.0, 1.0) {
+        
+        dt = time_horizon / num_steps;
+        
+        // Pre-allocate memory for efficiency
+        price_paths.resize(num_simulations);
+        for (auto& path : price_paths) {
+            path.resize(num_steps + 1); // +1 for initial price
+        }
+        
+        std::cout << "=== Monte Carlo GBM Simulation Initialized ===" << std::endl;
+        std::cout << "Initial Price (S₀): $" << initial_price << std::endl;
+        std::cout << "Drift (μ): " << drift * 100 << "% per year" << std::endl;
+        std::cout << "Volatility (σ): " << volatility * 100 << "% per year" << std::endl;
+        std::cout << "Time Horizon: " << time_horizon << " years" << std::endl;
+        std::cout << "Time Steps: " << num_steps << std::endl;
+        std::cout << "Simulations: " << num_simulations << std::endl;
+        std::cout << "dt: " << dt << std::endl << std::endl;
+    }
+    
+    /**
+     * Core Algorithm: Generate Monte Carlo price paths
+     * Time Complexity: O(M × N) where M = simulations, N = steps
+     * Space Complexity: O(M × N) for storing all paths
+     */
+    void simulate() {
+        std::cout << "Starting Monte Carlo simulation..." << std::endl;
+        
+        // Algorithm steps:
+        for (int sim = 0; sim < num_simulations; ++sim) {
+            // Step 1: Initialize each path with starting price
+            price_paths[sim][0] = initial_price;
+            
+            // Step 2: Generate path using GBM formula
+            for (int step = 1; step <= num_steps; ++step) {
+                // Step 2a: Generate random normal variable Z ~ N(0,1)
+                double Z = norm_dist(generator);
+                
+                // Step 2b: Calculate drift component (deterministic part)
+                double drift_component = (drift - 0.5 * volatility * volatility) * dt;
+                
+                // Step 2c: Calculate diffusion component (stochastic part)
+                double diffusion_component = volatility * std::sqrt(dt) * Z;
+                
+                // Step 2d: Apply GBM formula
+                price_paths[sim][step] = price_paths[sim][step - 1] * 
+                                       std::exp(drift_component + diffusion_component);
+            }
+            
+            // Progress indicator for large simulations
+            if ((sim + 1) % (num_simulations / 10) == 0) {
+                std::cout << "Progress: " << ((sim + 1) * 100 / num_simulations) 
+                         << "% complete" << std::endl;
+            }
+        }
+        
+        std::cout << "Simulation complete!" << std::endl << std::endl;
+    }
+    
+    /**
+     * Statistical Analysis of Results
+     * Calculates key statistics from the simulated paths
+     */
+    void analyzeResults() {
+        std::cout << "=== Statistical Analysis ===" << std::endl;
+        
+        // Extract final prices for analysis
+        std::vector<double> final_prices;
+        final_prices.reserve(num_simulations);
+        
+        for (int sim = 0; sim < num_simulations; ++sim) {
+            final_prices.push_back(price_paths[sim][num_steps]);
+        }
+        
+        // Sort for percentile calculations
+        std::sort(final_prices.begin(), final_prices.end());
+        
+        // Calculate statistics
+        double sum = 0.0;
+        double sum_squares = 0.0;
+        
+        for (double price : final_prices) {
+            sum += price;
+            sum_squares += price * price;
+        }
+        
+        double mean = sum / num_simulations;
+        double variance = (sum_squares / num_simulations) - (mean * mean);
+        double std_dev = std::sqrt(variance);
+        
+        // Percentiles
+        double min_price = final_prices[0];
+        double max_price = final_prices[num_simulations - 1];
+        double median = final_prices[num_simulations / 2];
+        double percentile_5 = final_prices[static_cast<int>(0.05 * num_simulations)];
+        double percentile_95 = final_prices[static_cast<int>(0.95 * num_simulations)];
+        
+        // Display results
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "Final Price Statistics:" << std::endl;
+        std::cout << "  Mean: $" << mean << std::endl;
+        std::cout << "  Standard Deviation: $" << std_dev << std::endl;
+        std::cout << "  Minimum: $" << min_price << std::endl;
+        std::cout << "  5th Percentile: $" << percentile_5 << std::endl;
+        std::cout << "  Median: $" << median << std::endl;
+        std::cout << "  95th Percentile: $" << percentile_95 << std::endl;
+        std::cout << "  Maximum: $" << max_price << std::endl;
+        
+        // Expected vs Actual comparison
+        double theoretical_mean = initial_price * std::exp(drift * time_horizon);
+        std::cout << "\nComparison with Theory:" << std::endl;
+        std::cout << "  Theoretical Mean: $" << theoretical_mean << std::endl;
+        std::cout << "  Simulation Mean: $" << mean << std::endl;
+        std::cout << "  Difference: $" << std::abs(theoretical_mean - mean) << std::endl;
+        
+        std::cout << std::endl;
+    }
+    
+    /**
+     * Display sample price paths
+     * Shows first few paths for visualization
+     */
+    void displaySamplePaths(int num_paths_to_show = 5) {
+        std::cout << "=== Sample Price Paths ===" << std::endl;
+        
+        int paths_to_display = std::min(num_paths_to_show, num_simulations);
+        
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "Time\t";
+        for (int i = 0; i < paths_to_display; ++i) {
+            std::cout << "Path " << (i + 1) << "\t";
+        }
+        std::cout << std::endl;
+        
+        // Show prices at selected time points
+        int display_interval = std::max(1, num_steps / 10); // Show 10 time points
+        
+        for (int step = 0; step <= num_steps; step += display_interval) {
+            double time = step * dt;
+            std::cout << time << "\t";
+            
+            for (int path = 0; path < paths_to_display; ++path) {
+                std::cout << "$" << price_paths[path][step] << "\t";
+            }
+            std::cout << std::endl;
+        }
+        std::cout << std::endl;
+    }
+    
+    /**
+     * Export results to CSV file for external analysis
+     */
+    void exportToCSV(const std::string& filename) {
+        std::ofstream file(filename);
+        
+        if (!file.is_open()) {
+            std::cerr << "Error: Cannot open file " << filename << std::endl;
+            return;
+        }
+        
+        // Write header
+        file << "Time";
+        for (int sim = 0; sim < num_simulations; ++sim) {
+            file << ",Path_" << (sim + 1);
+        }
+        file << std::endl;
+        
+        // Write data
+        for (int step = 0; step <= num_steps; ++step) {
+            double time = step * dt;
+            file << std::fixed << std::setprecision(6) << time;
+            
+            for (int sim = 0; sim < num_simulations; ++sim) {
+                file << "," << price_paths[sim][step];
+            }
+            file << std::endl;
+        }
+        
+        file.close();
+        std::cout << "Results exported to " << filename << std::endl << std::endl;
+    }
+    
+    /**
+     * Risk Metrics Calculation
+     * Value at Risk (VaR) and Expected Shortfall
+     */
+    void calculateRiskMetrics() {
+        std::cout << "=== Risk Metrics ===" << std::endl;
+        
+        // Calculate returns
+        std::vector<double> returns;
+        returns.reserve(num_simulations);
+        
+        for (int sim = 0; sim < num_simulations; ++sim) {
+            double initial = price_paths[sim][0];
+            double final = price_paths[sim][num_steps];
+            double return_pct = (final - initial) / initial;
+            returns.push_back(return_pct);
+        }
+        
+        // Sort returns for VaR calculation
+        std::sort(returns.begin(), returns.end());
+        
+        // Calculate VaR at different confidence levels
+        double var_95 = returns[static_cast<int>(0.05 * num_simulations)];
+        double var_99 = returns[static_cast<int>(0.01 * num_simulations)];
+        
+        // Expected Shortfall (average of worst 5% and 1%)
+        double es_95 = 0.0;
+        double es_99 = 0.0;
+        
+        int num_worst_5pct = static_cast<int>(0.05 * num_simulations);
+        int num_worst_1pct = static_cast<int>(0.01 * num_simulations);
+        
+        for (int i = 0; i < num_worst_5pct; ++i) {
+            es_95 += returns[i];
+        }
+        es_95 /= num_worst_5pct;
+        
+        for (int i = 0; i < num_worst_1pct; ++i) {
+            es_99 += returns[i];
+        }
+        es_99 /= num_worst_1pct;
+        
+        std::cout << std::fixed << std::setprecision(4);
+        std::cout << "Value at Risk (VaR):" << std::endl;
+        std::cout << "  95% VaR: " << var_95 * 100 << "%" << std::endl;
+        std::cout << "  99% VaR: " << var_99 * 100 << "%" << std::endl;
+        
+        std::cout << "Expected Shortfall (ES):" << std::endl;
+        std::cout << "  95% ES: " << es_95 * 100 << "%" << std::endl;
+        std::cout << "  99% ES: " << es_99 * 100 << "%" << std::endl;
+        
+        std::cout << std::endl;
+    }
+};
+
+/**
+ * Demonstration and Testing
+ */
+int main() {
+    std::cout << "Monte Carlo Simulation - Geometric Brownian Motion" << std::endl;
+    std::cout << "=================================================" << std::endl << std::endl;
+    
+    // Simulation parameters
+    double S0 = 100.0;      // Initial stock price: $100
+    double mu = 0.08;       // Expected annual return: 8%
+    double sigma = 0.20;    // Annual volatility: 20%
+    double T = 1.0;         // Time horizon: 1 year
+    int N = 252;            // Number of steps: daily (252 trading days)
+    int M = 10000;          // Number of simulations: 10,000 paths
+    
+    try {
+        // Create and run simulation
+        GeometricBrownianMotion gbm(S0, mu, sigma, T, N, M);
+        
+        // Execute Monte Carlo simulation
+        gbm.simulate();
+        
+        // Analyze results
+        gbm.analyzeResults();
+        
+        // Display sample paths
+        gbm.displaySamplePaths();
+        
+        // Calculate risk metrics
+        gbm.calculateRiskMetrics();
+        
+        // Export results
+        gbm.exportToCSV("monte_carlo_results.csv");
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+    
+    std::cout << "Simulation completed successfully!" << std::endl;
+    return 0;
+}
