@@ -1,0 +1,52 @@
+int main() {
+    Option opt;
+    int n_sims;
+    double bump;
+    int opt_type;
+
+    std::cout << "Enter Spot Price (S): ";
+    std::cin >> opt.S;
+
+    std::cout << "Enter Strike Price (K): ";
+    std::cin >> opt.K;
+
+    std::cout << "Enter Time to Maturity (T in years): ";
+    std::cin >> opt.T;
+
+    std::cout << "Enter Risk-Free Rate (r): ";
+    std::cin >> opt.r;
+
+    std::cout << "Enter Volatility (sigma): ";
+    std::cin >> opt.sigma;
+
+    std::cout << "Enter Option Type (0 = CALL, 1 = PUT): ";
+    std::cin >> opt_type;
+    opt.type = (opt_type == 0) ? OptionType::CALL : OptionType::PUT;
+
+    std::cout << "Enter Number of Simulations: ";
+    std::cin >> n_sims;
+
+    std::cout << "Enter Bump Size (for Greeks): ";
+    std::cin >> bump;
+
+    std::mt19937 gen(42);  // Fixed seed for reproducibility
+
+    double price_antithetic = monte_carlo_antithetic(opt, n_sims, gen);
+
+    gen.seed(42);  // Re-seed for consistency
+    double price_control = monte_carlo_control_variate(opt, n_sims, gen);
+
+    gen.seed(42);
+    double delta = finite_diff_delta(opt, bump, n_sims, gen);
+
+    gen.seed(42);
+    double vega = finite_diff_vega(opt, bump, n_sims, gen);
+
+    std::cout << "\nResults:\n";
+    std::cout << "Monte Carlo (Antithetic):      " << price_antithetic << "\n";
+    std::cout << "Monte Carlo (Control Variate): " << price_control << "\n";
+    std::cout << "Delta (Finite Difference):     " << delta << "\n";
+    std::cout << "Vega (Finite Difference):      " << vega << "\n";
+
+    return 0;
+}
