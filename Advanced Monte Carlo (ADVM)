@@ -1,0 +1,328 @@
+#include <iostream>
+#include <vector>
+#include <map>
+#include <cmath>
+#include <fstream>
+#include <algorithm>
+#include <numeric>
+#include <functional>
+#include <string>
+#include <iomanip>
+#include <limits>
+
+using namespace std;
+
+// Standard normal CDF approximation
+double norm_cdf(double x) {
+    return 0.5 * (1.0 + erf(x / sqrt(2.0)));
+}
+
+// Option structure
+struct Option {
+    double S;      // Spot price
+    double K;      // Strike price
+    double T;      // Time to maturity (years)
+    double r;      // Risk-free rate
+    double sigma;  // Volatility
+    string type;   // "call" or "put"
+
+    Option(double S = 100, double K = 105, double T = 1.0,
+           double r = 0.05, double sigma = 0.2, string type = "call")
+        : S(S), K(K), T(T), r(r), sigma(sigma), type(type) {}
+
+    // Input validation
+    bool is_valid() const {
+        return S > 0 && K > 0 && T > 0 && r >= 0 && sigma > 0 && 
+               (type == "call" || type == "put");
+    }
+};
+
+// Sensitivity analysis class
+class SensitivityAnalyzer {
+public:
+    using PricingFunction = function<double(const Option&)>;
+
+    struct ParameterRange {
+        string name;
+        vector<double> values;
+    };
+
+    struct AnalysisResult {
+        map<string, vector<double>> parameter_values;
+        map<string, vector<double>> prices;
+        map<string, vector<double>> deltas;
+    };
+
+    SensitivityAnalyzer(PricingFunction pricing_func)
+        : pricing_func_(pricing_func) {}
+
+    AnalysisResult analyze(const Option& base_option,
+                          const vector<ParameterRange>& ranges) {
+        AnalysisResult result;
+        
+        if (!base_option.is_valid()) {
+            cout << "Error: Invalid base option parameters!" << endl;
+            return result;
+        }
+        
+        const double base_price = pricing_func_(base_option);
+        cout << "\nBase option price: $" << fixed << setprecision(4) << base_price << endl;
+
+        for (const auto& range : ranges) {
+            vector<double> prices;
+            vector<double> deltas;
+
+            for (double value : range.values) {
+                Option modified = base_option;
+                
+                if (range.name == "sigma") modified.sigma = value;
+                else if (range.name == "r") modified.r = value;
+                else if (range.name == "T") modified.T = value;
+                else if (range.name == "S") modified.S = value;
+                else if (range.name == "K") modified.K = value;
+
+                if (modified.is_valid()) {
+                    double price = pricing_func_(modified);
+                    prices.push_back(price);
+                    deltas.push_back(price - base_price);
+                } else {
+                    prices.push_back(0.0);
+                    deltas.push_back(0.0);
+                }
+            }
+
+            result.parameter_values[range.name] = range.values;
+            result.prices[range.name] = prices;
+            result.deltas[range.name] = deltas;
+        }
+        return result;
+    }
+
+    void export_csv(const AnalysisResult& result, const string& filename) {
+        ofstream file(filename);
+        if (!file.is_open()) {
+            cout << "Error: Could not create CSV file!" << endl;
+            return;
+        }
+        
+        file << "Parameter,Value,Price,Delta\n";
+
+        for (const auto& [param, values] : result.parameter_values) {
+            for (size_t i = 0; i < values.size(); ++i) {
+                file << param << ","
+                     << fixed << setprecision(6) << values[i] << ","
+                     << result.prices.at(param)[i] << ","
+                     << result.deltas.at(param)[i] << "\n";
+            }
+        }
+        cout << "Results exported to " << filename << endl;
+    }
+
+    void print_summary(const AnalysisResult& result) {
+        cout << "\n=== SENSITIVITY ANALYSIS SUMMARY ===" << endl;
+        
+        for (const auto& [param, deltas] : result.deltas) {
+            if (deltas.empty()) continue;
+            
+            auto [min_it, max_it] = minmax_element(deltas.begin(), deltas.end());
+            double range = *max_it - *min_it;
+            double avg_delta = accumulate(deltas.begin(), deltas.end(), 0.0) / deltas.size();
+            
+            cout << "\nParameter: " << param << endl;
+            cout << "  Max price change: $" << fixed << setprecision(4) << *max_it << endl;
+            cout << "  Min price change: $" << *min_it << endl;
+            cout << "  Total range: $" << range << endl;
+            cout << "  Average change: $" << avg_delta << endl;
+        }
+    }
+
+    void print_dominant_factor(const AnalysisResult& result) {
+        string dominant_param;
+        double max_range = 0.0;
+
+        for (const auto& [param, deltas] : result.deltas) {
+            if (deltas.empty()) continue;
+            
+            auto [min_it, max_it] = minmax_element(deltas.begin(), deltas.end());
+            double range = *max_it - *min_it;
+
+            if (range > max_range) {
+                max_range = range;
+                dominant_param = param;
+            }
+        }
+
+        cout << "\n=== DOMINANT FACTOR ANALYSIS ===" << endl;
+        cout << "Most sensitive parameter: " << dominant_param << endl;
+        cout << "Price variation range: $" << fixed << setprecision(4) << max_range << endl;
+    }
+
+private:
+    PricingFunction pricing_func_;
+};
+
+// Black-Scholes pricing function (corrected)
+double black_scholes(const Option& opt) {
+    if (opt.T <= 0 || opt.sigma <= 0 || opt.S <= 0 || opt.K <= 0) {
+        return 0.0;
+    }
+    
+    double d1 = (log(opt.S / opt.K) + (opt.r + 0.5 * pow(opt.sigma, 2)) * opt.T)
+                / (opt.sigma * sqrt(opt.T));
+    double d2 = d1 - opt.sigma * sqrt(opt.T);
+
+    if (opt.type == "call") {
+        return opt.S * norm_cdf(d1) - opt.K * exp(-opt.r * opt.T) * norm_cdf(d2);
+    } else {
+        return opt.K * exp(-opt.r * opt.T) * norm_cdf(-d2) - opt.S * norm_cdf(-d1);
+    }
+}
+
+// Helper function to generate value ranges
+vector<double> linspace(double start, double end, size_t points) {
+    if (points == 0) return {};
+    if (points == 1) return {start};
+    
+    vector<double> result(points);
+    double step = (end - start) / (points - 1);
+
+    for (size_t i = 0; i < points; ++i) {
+        result[i] = start + i * step;
+    }
+    return result;
+}
+
+// Input validation functions
+double get_positive_double(const string& prompt) {
+    double value;
+    while (true) {
+        cout << prompt;
+        if (cin >> value && value > 0) {
+            return value;
+        }
+        cout << "Please enter a positive number." << endl;
+        cin.clear();
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    }
+}
+
+double get_non_negative_double(const string& prompt) {
+    double value;
+    while (true) {
+        cout << prompt;
+        if (cin >> value && value >= 0) {
+            return value;
+        }
+        cout << "Please enter a non-negative number." << endl;
+        cin.clear();
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    }
+}
+
+string get_option_type() {
+    string type;
+    while (true) {
+        cout << "Option type (call/put): ";
+        cin >> type;
+        transform(type.begin(), type.end(), type.begin(), ::tolower);
+        if (type == "call" || type == "put") {
+            return type;
+        }
+        cout << "Please enter 'call' or 'put'." << endl;
+    }
+}
+
+int get_positive_int(const string& prompt) {
+    int value;
+    while (true) {
+        cout << prompt;
+        if (cin >> value && value > 0) {
+            return value;
+        }
+        cout << "Please enter a positive integer." << endl;
+        cin.clear();
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    }
+}
+
+// Function to display option details
+void display_option(const Option& opt) {
+    cout << "\n=== OPTION DETAILS ===" << endl;
+    cout << "Spot Price (S): $" << fixed << setprecision(2) << opt.S << endl;
+    cout << "Strike Price (K): $" << opt.K << endl;
+    cout << "Time to Maturity (T): " << opt.T << " years" << endl;
+    cout << "Risk-free Rate (r): " << setprecision(4) << (opt.r * 100) << "%" << endl;
+    cout << "Volatility (σ): " << (opt.sigma * 100) << "%" << endl;
+    cout << "Option Type: " << opt.type << endl;
+}
+
+int main() {
+    cout << "=== OPTIONS SENSITIVITY ANALYSIS TOOL ===" << endl;
+    cout << "This tool performs sensitivity analysis on option prices using Black-Scholes." << endl;
+
+    // Get option parameters from user
+    cout << "\nPlease enter option parameters:" << endl;
+    
+    double S = get_positive_double("Spot price ($): ");
+    double K = get_positive_double("Strike price ($): ");
+    double T = get_positive_double("Time to maturity (years): ");
+    double r = get_non_negative_double("Risk-free rate (e.g., 0.05 for 5%): ");
+    double sigma = get_positive_double("Volatility (e.g., 0.2 for 20%): ");
+    string type = get_option_type();
+
+    // Create option
+    Option user_option(S, K, T, r, sigma, type);
+    
+    if (!user_option.is_valid()) {
+        cout << "Error: Invalid option parameters!" << endl;
+        return 1;
+    }
+
+    display_option(user_option);
+
+    // Set up sensitivity analyzer
+    SensitivityAnalyzer analyzer(black_scholes);
+
+    // Get sensitivity analysis parameters
+    cout << "\n=== SENSITIVITY ANALYSIS SETUP ===" << endl;
+    
+    vector<SensitivityAnalyzer::ParameterRange> ranges;
+    
+    // Volatility sensitivity
+    cout << "\nVolatility sensitivity analysis:" << endl;
+    double vol_min = get_positive_double("Minimum volatility to test: ");
+    double vol_max = get_positive_double("Maximum volatility to test: ");
+    int vol_points = get_positive_int("Number of points: ");
+    ranges.push_back({"sigma", linspace(vol_min, vol_max, vol_points)});
+    
+    // Interest rate sensitivity
+    cout << "\nInterest rate sensitivity analysis:" << endl;
+    double r_min = get_non_negative_double("Minimum interest rate to test: ");
+    double r_max = get_non_negative_double("Maximum interest rate to test: ");
+    int r_points = get_positive_int("Number of points: ");
+    ranges.push_back({"r", linspace(r_min, r_max, r_points)});
+    
+    // Time to maturity sensitivity
+    cout << "\nTime to maturity sensitivity analysis:" << endl;
+    double t_min = get_positive_double("Minimum time to test: ");
+    double t_max = get_positive_double("Maximum time to test: ");
+    int t_points = get_positive_int("Number of points: ");
+    ranges.push_back({"T", linspace(t_min, t_max, t_points)});
+
+    // Run analysis
+    cout << "\nRunning sensitivity analysis..." << endl;
+    auto results = analyzer.analyze(user_option, ranges);
+
+    // Display results
+    analyzer.print_summary(results);
+    analyzer.print_dominant_factor(results);
+
+    // Export results
+    string filename;
+    cout << "\nEnter filename for CSV export (e.g., 'results.csv'): ";
+    cin >> filename;
+    analyzer.export_csv(results, filename);
+
+    cout << "\nAnalysis complete!" << endl;
+    return 0;
+}
