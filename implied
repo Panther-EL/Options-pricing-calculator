@@ -1,0 +1,135 @@
+#include <cmath>
+#include <iostream>
+#include <limits>
+#include <string>
+
+// Standard normal PDF
+double normal_pdf(double x) {
+    static const double INV_SQRT_2PI = 1.0 / std::sqrt(2.0 * M_PI);
+    return INV_SQRT_2PI * std::exp(-0.5 * x * x);
+}
+
+// Standard normal CDF using erf
+double normal_cdf(double x) {
+    return 0.5 * (1.0 + std::erf(x / std::sqrt(2.0)));
+}
+
+// Black-Scholes price for European call/put (continuous dividend yield q)
+double bs_price(const std::string& option_type, double S, double K, double T,
+                double r, double sigma, double q = 0.0) {
+
+    if (T <= 0.0 || sigma <= 0.0 || S <= 0.0 || K <= 0.0) {
+        throw std::invalid_argument("Non-positive input to bs_price");
+    }
+
+    double sqrtT = std::sqrt(T);
+    double d1 = (std::log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+    double d2 = d1 - sigma * sqrtT;
+
+    if (option_type == "call" || option_type == "Call") {
+        return S * std::exp(-q * T) * normal_cdf(d1) - K * std::exp(-r * T) * normal_cdf(d2);
+    } else if (option_type == "put" || option_type == "Put") {
+        return K * std::exp(-r * T) * normal_cdf(-d2) - S * std::exp(-q * T) * normal_cdf(-d1);
+    } else {
+        throw std::invalid_argument("option_type must be 'call' or 'put'");
+    }
+}
+
+// Vega: derivative of price w.r.t. volatility
+double vega(double S, double K, double T, double r, double sigma, double q = 0.0) {
+    double sqrtT = std::sqrt(T);
+    double d1 = (std::log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
+    return S * std::exp(-q * T) * normal_pdf(d1) * sqrtT;
+}
+
+// Newton-Raphson for implied volatility
+// Returns pair: (implied_vol, success_flag)
+std::tuple<double, bool, int> implied_vol_newton(const std::string& option_type,
+                                                 double market_price,
+                                                 double S, double K, double T,
+                                                 double r, double q = 0.0,
+                                                 double initial_sigma = 0.2,
+                                                 double tol = 1e-8,
+                                                 int max_iter = 100) {
+    double sigma = initial_sigma;
+    for (int i = 1; i <= max_iter; ++i) {
+        double price = bs_price(option_type, S, K, T, r, sigma, q);
+        double diff = price - market_price;
+        if (std::fabs(diff) < tol)
+            return {sigma, true, i};
+        double v = vega(S, K, T, r, sigma, q);
+        if (v <= std::numeric_limits<double>::epsilon())
+            break;
+        sigma -= diff / v;
+        if (sigma <= 0)
+            sigma = tol; // keep positive
+    }
+    return {sigma, false, max_iter};
+}
+
+// Bisection method for implied volatility
+std::tuple<double, bool, int> implied_vol_bisection(const std::string& option_type,
+                                                    double market_price,
+                                                    double S, double K, double T,
+                                                    double r, double q = 0.0,
+                                                    double low = 1e-6,
+                                                    double high = 5.0,
+                                                    double tol = 1e-8,
+                                                    int max_iter = 100) {
+    double price_low = bs_price(option_type, S, K, T, r, low, q);
+    double price_high = bs_price(option_type, S, K, T, r, high, q);
+
+    // Check if market_price is bracketed
+    if (!((price_low <= market_price && market_price <= price_high) ||
+          (price_high <= market_price && market_price <= price_low))) {
+        return {0.0, false, 0}; // out of bounds
+    }
+
+    double mid = 0.0;
+    double price_mid = 0.0;
+    for (int i = 1; i <= max_iter; ++i) {
+        mid = 0.5 * (low + high);
+        price_mid = bs_price(option_type, S, K, T, r, mid, q);
+        if (std::fabs(price_mid - market_price) < tol)
+            return {mid, true, i};
+        // Decide which side to keep
+        if ((price_low - market_price) * (price_mid - market_price) <= 0) {
+            high = mid;
+            price_high = price_mid;
+        } else {
+            low = mid;
+            price_low = price_mid;
+        }
+    }
+    return {0.5 * (low + high), false, max_iter};
+}
+
+int main() {
+    try {
+        // Example: known volatility -> market price -> recover it
+        double S = 100.0;
+        double K = 100.0;
+        double T = 0.5;       // in years
+        double r = 0.05;      // risk-free rate
+        double sigma_true = 0.2;
+        std::string option_type = "call";
+
+        double market_price = bs_price(option_type, S, K, T, r, sigma_true);
+
+        auto [vol_newton, success_newton, iter_newton] = implied_vol_newton(
+            option_type, market_price, S, K, T, r);
+        auto [vol_bisect, success_bisect, iter_bisect] = implied_vol_bisection(
+            option_type, market_price, S, K, T, r);
+
+        std::cout << "True vol: " << sigma_true << "\n";
+        std::cout << "Newton-Raphson recovered: " << vol_newton
+                  << ", success=" << (success_newton ? "true" : "false")
+                  << ", iterations=" << iter_newton << "\n";
+        std::cout << "Bisection recovered:     " << vol_bisect
+                  << ", success=" << (success_bisect ? "true" : "false")
+                  << ", iterations=" << iter_bisect << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: " << e.what() << "\n";
+    }
+    return 0;
+}
