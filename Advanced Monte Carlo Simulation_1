@@ -1,0 +1,289 @@
+#include <iostream>
+#include <vector>
+#include <random>
+#include <cmath>
+#include <algorithm>
+#include <numeric>
+#include <string>
+#include <iomanip>
+#include <limits>
+#include <chrono>
+#include <fstream>
+#include <map>
+
+using namespace std;
+using namespace chrono;
+
+// Random number generator setup
+class RandomGenerator {
+private:
+    mt19937 generator;
+    normal_distribution<double> normal_dist;
+    uniform_real_distribution<double> uniform_dist;
+
+public:
+    RandomGenerator() : generator(random_device{}()), normal_dist(0.0, 1.0), uniform_dist(0.0, 1.0) {}
+    
+    void seed(unsigned int s) { generator.seed(s); }
+    double normal() { return normal_dist(generator); }
+    double uniform() { return uniform_dist(generator); }
+};
+
+// Option base class
+class Option {
+public:
+    double S0;      // Initial stock price
+    double K;       // Strike price
+    double T;       // Time to maturity
+    double r;       // Risk-free rate
+    double sigma;   // Volatility
+    double q;       // Dividend yield
+    string type;    // Option type
+    
+    Option(double S0, double K, double T, double r, double sigma, double q = 0.0, string type = "call")
+        : S0(S0), K(K), T(T), r(r), sigma(sigma), q(q), type(type) {}
+        
+    virtual ~Option() = default;
+    virtual double payoff(const vector<double>& path) const = 0;
+    virtual bool is_valid() const {
+        return S0 > 0 && K > 0 && T > 0 && r >= 0 && sigma > 0 && q >= 0;
+    }
+};
+
+// European Option
+class EuropeanOption : public Option {
+public:
+    EuropeanOption(double S0, double K, double T, double r, double sigma, double q = 0.0, string type = "call")
+        : Option(S0, K, T, r, sigma, q, type) {}
+    
+    double payoff(const vector<double>& path) const override {
+        double ST = path.back();
+        if (type == "call") {
+            return max(ST - K, 0.0);
+        } else {
+            return max(K - ST, 0.0);
+        }
+    }
+};
+
+// Asian Option (Average Price)
+class AsianOption : public Option {
+public:
+    AsianOption(double S0, double K, double T, double r, double sigma, double q = 0.0, string type = "call")
+        : Option(S0, K, T, r, sigma, q, type) {}
+    
+    double payoff(const vector<double>& path) const override {
+        double average = accumulate(path.begin(), path.end(), 0.0) / path.size();
+        if (type == "call") {
+            return max(average - K, 0.0);
+        } else {
+            return max(K - average, 0.0);
+        }
+    }
+};
+
+// American Option (simplified - using early exercise heuristic)
+class AmericanOption : public Option {
+public:
+    AmericanOption(double S0, double K, double T, double r, double sigma, double q = 0.0, string type = "call")
+        : Option(S0, K, T, r, sigma, q, type) {}
+    
+    double payoff(const vector<double>& path) const override {
+        double max_payoff = 0.0;
+        for (size_t i = 0; i < path.size(); ++i) {
+            double current_payoff;
+            if (type == "call") {
+                current_payoff = max(path[i] - K, 0.0);
+            } else {
+                current_payoff = max(K - path[i], 0.0);
+            }
+            // Apply discount factor for early exercise
+            double discount = exp(-r * T * i / (path.size() - 1));
+            max_payoff = max(max_payoff, current_payoff * discount);
+        }
+        return max_payoff;
+    }
+};
+
+// Barrier Option
+class BarrierOption : public Option {
+private:
+    double barrier;
+    string barrier_type; // "up-and-out", "up-and-in", "down-and-out", "down-and-in"
+    
+public:
+    BarrierOption(double S0, double K, double T, double r, double sigma, double barrier, 
+                  string barrier_type = "up-and-out", double q = 0.0, string type = "call")
+        : Option(S0, K, T, r, sigma, q, type), barrier(barrier), barrier_type(barrier_type) {}
+    
+    double payoff(const vector<double>& path) const override {
+        bool barrier_hit = false;
+        
+        // Check if barrier was hit during the path
+        for (double price : path) {
+            if ((barrier_type.find("up") != string::npos && price >= barrier) ||
+                (barrier_type.find("down") != string::npos && price <= barrier)) {
+                barrier_hit = true;
+                break;
+            }
+        }
+        
+        // Calculate base payoff
+        double ST = path.back();
+        double base_payoff = (type == "call") ? max(ST - K, 0.0) : max(K - ST, 0.0);
+        
+        // Apply barrier condition
+        if (barrier_type.find("out") != string::npos) {
+            return barrier_hit ? 0.0 : base_payoff;
+        } else { // "in" type
+            return barrier_hit ? base_payoff : 0.0;
+        }
+    }
+};
+
+// Monte Carlo Simulation Engine
+class MonteCarloEngine {
+private:
+    RandomGenerator rng;
+    
+public:
+    struct SimulationParams {
+        int num_simulations = 100000;
+        int time_steps = 252;
+        bool use_antithetic = false;
+        bool use_control_variate = false;
+        bool parallel_processing = false;
+        unsigned int seed = 0;
+    };
+    
+    struct SimulationResult {
+        double price;
+        double standard_error;
+        double confidence_interval_lower;
+        double confidence_interval_upper;
+        double execution_time_ms;
+        vector<double> payoffs; // Store for analysis
+    };
+    
+    MonteCarloEngine() = default;
+    
+    // Generate single price path using Geometric Brownian Motion
+    vector<double> generate_path(const Option& option, const SimulationParams& params) {
+        vector<double> path(params.time_steps + 1);
+        path[0] = option.S0;
+        
+        double dt = option.T / params.time_steps;
+        double drift = (option.r - option.q - 0.5 * option.sigma * option.sigma) * dt;
+        double diffusion = option.sigma * sqrt(dt);
+        
+        for (int i = 1; i <= params.time_steps; ++i) {
+            double z = rng.normal();
+            path[i] = path[i-1] * exp(drift + diffusion * z);
+        }
+        
+        return path;
+    }
+    
+    // Generate antithetic path
+    vector<double> generate_antithetic_path(const Option& option, const SimulationParams& params, 
+                                          const vector<double>& random_numbers) {
+        vector<double> path(params.time_steps + 1);
+        path[0] = option.S0;
+        
+        double dt = option.T / params.time_steps;
+        double drift = (option.r - option.q - 0.5 * option.sigma * option.sigma) * dt;
+        double diffusion = option.sigma * sqrt(dt);
+        
+        for (int i = 1; i <= params.time_steps; ++i) {
+            double z = -random_numbers[i-1]; // Use negative of original random number
+            path[i] = path[i-1] * exp(drift + diffusion * z);
+        }
+        
+        return path;
+    }
+    
+    SimulationResult simulate(const Option& option, const SimulationParams& params) {
+        if (params.seed != 0) {
+            rng.seed(params.seed);
+        }
+        
+        auto start_time = high_resolution_clock::now();
+        
+        vector<double> payoffs;
+        vector<double> control_variates; // For control variate technique
+        
+        int effective_simulations = params.use_antithetic ? params.num_simulations / 2 : params.num_simulations;
+        
+        for (int i = 0; i < effective_simulations; ++i) {
+            // Store random numbers for antithetic variates
+            vector<double> random_numbers;
+            if (params.use_antithetic) {
+                random_numbers.resize(params.time_steps);
+            }
+            
+            // Generate primary path
+            vector<double> path = generate_path(option, params);
+            double payoff1 = option.payoff(path);
+            payoffs.push_back(payoff1);
+            
+            // Control variate (using final stock price for European options)
+            if (params.use_control_variate) {
+                control_variates.push_back(path.back());
+            }
+            
+            // Generate antithetic path if enabled
+            if (params.use_antithetic) {
+                // Store random numbers from primary path generation
+                for (int j = 0; j < params.time_steps; ++j) {
+                    random_numbers[j] = rng.normal();
+                }
+                
+                vector<double> anti_path = generate_antithetic_path(option, params, random_numbers);
+                double payoff2 = option.payoff(anti_path);
+                payoffs.push_back(payoff2);
+                
+                if (params.use_control_variate) {
+                    control_variates.push_back(anti_path.back());
+                }
+            }
+        }
+        
+        auto end_time = high_resolution_clock::now();
+        auto duration = duration_cast<milliseconds>(end_time - start_time);
+        
+        // Calculate statistics
+        double mean_payoff = accumulate(payoffs.begin(), payoffs.end(), 0.0) / payoffs.size();
+        
+        // Apply control variate if enabled
+        if (params.use_control_variate && !control_variates.empty()) {
+            double expected_stock_price = option.S0 * exp((option.r - option.q) * option.T);
+            double mean_control = accumulate(control_variates.begin(), control_variates.end(), 0.0) / control_variates.size();
+            
+            // Calculate correlation and apply control variate adjustment
+            double covariance = 0.0;
+            double variance_control = 0.0;
+            
+            for (size_t i = 0; i < payoffs.size(); ++i) {
+                covariance += (payoffs[i] - mean_payoff) * (control_variates[i] - mean_control);
+                variance_control += pow(control_variates[i] - mean_control, 2);
+            }
+            
+            covariance /= (payoffs.size() - 1);
+            variance_control /= (payoffs.size() - 1);
+            
+            if (variance_control > 0) {
+                double beta = covariance / variance_control;
+                mean_payoff -= beta * (mean_control - expected_stock_price);
+            }
+        }
+        
+        // Discount to present value
+        double option_price = exp(-option.r * option.T) * mean_payoff;
+        
+        // Calculate standard error
+        double sum_squared_diff = 0.0;
+        for (double payoff : payoffs) {
+            sum_squared_diff += pow(payoff - mean_payoff, 2);
+        }
+        double variance = sum_squared_diff / (payoffs.size() - 1);
+        double standard_error = sqrt(variance / payoffs.size()) * exp(-opt
